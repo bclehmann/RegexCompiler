@@ -7,6 +7,7 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/IR/InstrTypes.h>
 
 int main() {
     char char_to_match = getchar();
@@ -30,48 +31,26 @@ int main() {
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", main_function);
     Builder.SetInsertPoint(entry);
 
-    Builder.CreateCall(puts_type, puts_function, Builder.CreateGlobalStringPtr("Hello world!"));
-    Builder.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0, true));
+    llvm::Value* input = Builder.CreateCall(getchar_type, getchar_function);
+    llvm::Value* isEqual = Builder.CreateICmpEQ(input, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), char_to_match));
 
-#if 0
+    llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "end", main_function);
 
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context, main_function, "entry");
-    LLVMPositionBuilderAtEnd(builder, entry);
+    llvm::BasicBlock* no_match = llvm::BasicBlock::Create(context, "no_match", main_function);
+    Builder.SetInsertPoint(no_match);
+    Builder.CreateCall(puts_type, puts_function, Builder.CreateGlobalStringPtr("Sorry, that didn't match."));
+    Builder.CreateBr(end);
 
-    LLVMValueRef input = LLVMBuildCall2(builder, getchar_function_type, getchar_function, nullptr, 0, "getchar");
-    LLVMValueRef equals = LLVMBuildICmp(builder, LLVMIntEQ, input, LLVMConstInt(int_32_type, char_to_match, false), "equality check");
+    llvm::BasicBlock* match = llvm::BasicBlock::Create(context, "match", main_function);
+    Builder.SetInsertPoint(match);
+    Builder.CreateCall(puts_type, puts_function, Builder.CreateGlobalStringPtr("Yay! That did match."));
+    Builder.CreateBr(end);
 
-    LLVMBasicBlockRef no_match = LLVMAppendBasicBlockInContext(context, main_function, "no_match");
-    LLVMBasicBlockRef match = LLVMAppendBasicBlockInContext(context, main_function, "match");
-    LLVMBasicBlockRef end = LLVMAppendBasicBlockInContext(context, main_function, "end");
-    LLVMBuildCondBr(builder, equals, match, no_match);
+    Builder.SetInsertPoint(entry);
+    Builder.CreateCondBr(isEqual, match, no_match);
 
-    LLVMPositionBuilderAtEnd(builder, no_match);
-    LLVMValueRef no_match_args[] = {
-        LLVMBuildPointerCast(builder, LLVMBuildGlobalString(builder, "Sorry, that didn't match", "no_match_str"), int_8_type_ptr, "0")
-    };
-    LLVMBuildCall2(builder, puts_function_type, puts_function, no_match_args, 1, "no_match_call");
-    LLVMBuildBr(builder, end);
-
-    LLVMPositionBuilderAtEnd(builder, match);
-     LLVMValueRef match_args[] = {
-        LLVMBuildPointerCast(builder, LLVMBuildGlobalString(builder, "Yay! that did match", "match_str"), int_8_type_ptr, "0")
-    };
-    LLVMBuildCall2(builder, puts_function_type, puts_function, match_args, 1, "match_call");
-    LLVMBuildBr(builder, end);
-
-    LLVMPositionBuilderAtEnd(builder, end);
-
-    LLVMBuildRet(builder, LLVMBuildIntCast2(builder, LLVMBuildNot(builder, equals, ""), int_32_type, true, ""));
-
-    //LLVMDumpModule(module); // dump module to STDOUT
-    LLVMPrintModuleToFile(module, "out.ll", nullptr);
-
-    // clean memory
-    LLVMDisposeBuilder(builder);
-    LLVMDisposeModule(module);
-    LLVMContextDispose(context);
-#endif
+    Builder.SetInsertPoint(end);
+    Builder.CreateRet(Builder.CreateIntCast(Builder.CreateNot(isEqual), llvm::Type::getInt32Ty(context), false));
 
     std::error_code ec;
     llvm::raw_fd_ostream output("out.ll", ec);
