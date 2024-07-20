@@ -1,31 +1,39 @@
 #include <cstdio>
 #include <llvm-c/Core.h>
-
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/ADT/ArrayRef.h>
 
 int main() {
     char char_to_match = getchar();
-    // create context and define getchar and puts
-    LLVMContextRef context = LLVMContextCreate();
-    LLVMModuleRef  module = LLVMModuleCreateWithNameInContext("RegexCompiler", context);
-    LLVMBuilderRef builder = LLVMCreateBuilderInContext(context);
+    llvm::LLVMContext context;
+    llvm::IRBuilder Builder(context);
+    llvm::Module module("RegexCompiler", context);
 
-    LLVMTypeRef int_8_type = LLVMInt8TypeInContext(context);
-    LLVMTypeRef int_8_type_ptr = LLVMPointerType(int_8_type, 0);
-    LLVMTypeRef int_32_type = LLVMInt32TypeInContext(context);
+    std::vector<llvm::Type*> getchar_args_type;
+    llvm::FunctionType* getchar_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(context), getchar_args_type, false);
+    llvm::Function* getchar_function = llvm::Function::Create(getchar_type, llvm::Function::ExternalLinkage, "getchar", &module);
 
-    LLVMTypeRef  getchar_function_type = LLVMFunctionType(int_32_type, nullptr, 0, false);
-    LLVMValueRef getchar_function = LLVMAddFunction(module, "getchar", getchar_function_type);
-
-    LLVMTypeRef puts_function_args_type[] {
-        int_8_type_ptr
-    };
-
-    LLVMTypeRef  puts_function_type = LLVMFunctionType(int_32_type, puts_function_args_type, 1, false);
-    LLVMValueRef puts_function = LLVMAddFunction(module, "puts", puts_function_type);
+    std::vector<llvm::Type*> puts_args_type(1, llvm::Type::getInt8Ty(context)->getPointerTo());
+    llvm::FunctionType* puts_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(context), llvm::ArrayRef(puts_args_type), false);
+    llvm::Function* puts_function = llvm::Function::Create(puts_type, llvm::Function::ExternalLinkage, "puts", &module);
 
     // main function
-    LLVMTypeRef  main_function_type = LLVMFunctionType(int_32_type, nullptr, 0, false);
-    LLVMValueRef main_function = LLVMAddFunction(module, "main", main_function_type);
+    std::vector<llvm::Type*> main_args_type;
+    llvm::FunctionType* main_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(context), main_args_type, false);
+    llvm::Function* main_function = llvm::Function::Create(main_type, llvm::Function::ExternalLinkage, "main", &module);
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", main_function);
+    Builder.SetInsertPoint(entry);
+
+    Builder.CreateCall(puts_type, puts_function, Builder.CreateGlobalStringPtr("Hello world!"));
+    Builder.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0, true));
+
+#if 0
 
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(context, main_function, "entry");
     LLVMPositionBuilderAtEnd(builder, entry);
@@ -63,6 +71,11 @@ int main() {
     LLVMDisposeBuilder(builder);
     LLVMDisposeModule(module);
     LLVMContextDispose(context);
+#endif
+
+    std::error_code ec;
+    llvm::raw_fd_ostream output("out.ll", ec);
+    module.print(output, nullptr);
 
     return 0;
 }
