@@ -28,7 +28,11 @@ public:
 	Literal(char to_match, llvm::LLVMContext* context, llvm::Module* module, llvm::IRBuilder<>* builder)
 	: to_match{to_match}, context{context}, module{module}, builder{builder}
 	{
-		generated_function_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(*context), false);
+		generated_function_type = llvm::FunctionType::get(
+			llvm::Type::getInt32Ty(*context),
+			std::vector<llvm::Type*> { llvm::Type::getInt8Ty(*context)->getPointerTo(), llvm::Type::getInt32Ty(*context) }, // buf and index
+			false
+		);
 	}
 	llvm::Function* codegen() override {
 		llvm::Function* existing = module->getFunction(get_generated_function_name());
@@ -38,17 +42,17 @@ public:
 		}
 
 		llvm::Function* generated_function = llvm::Function::Create(generated_function_type, llvm::Function::PrivateLinkage, get_generated_function_name(), module);
-
-		llvm::FunctionType* getchar_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(*context), false);
-		llvm::Function* existing_getchar = module->getFunction("getchar");
-		llvm::Function* getchar_function = existing_getchar
-			? existing_getchar
-			: llvm::Function::Create(getchar_type, llvm::Function::ExternalLinkage, "getchar", module);
-
 		llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context, "entry", generated_function);
 		builder->SetInsertPoint(entry);
-		llvm::Value* input = builder->CreateCall(getchar_type, getchar_function);
-		llvm::Value* is_equal = builder->CreateICmpEQ(input, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context), to_match));
+
+		llvm::Value* buf = generated_function->args().begin();
+		llvm::Value* index = (generated_function->args().begin() + 1);
+
+		llvm::Value* input = builder->CreateLoad(
+			llvm::Type::getInt8Ty(*context),
+			builder->CreateGEP(llvm::Type::getInt8Ty(*context), buf, std::vector<llvm::Value*> { index })
+		);
+		llvm::Value* is_equal = builder->CreateICmpEQ(input, llvm::ConstantInt::get(llvm::Type::getInt8Ty(*context), to_match));
 
 		llvm::BasicBlock* matches = llvm::BasicBlock::Create(*context, "matches", generated_function);
 		builder->SetInsertPoint(matches);
@@ -187,14 +191,10 @@ int main(int argc, char* argv[]) {
 
 	llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", main_function);
 	Builder.SetInsertPoint(entry);
-	std::vector<Atom*> atoms;
+	std::vector<std::unique_ptr<Atom>> atoms;
 	for(char c : regex) {
-		Literal literal(c, &context, &module, &Builder);
-		atoms.push_back(&literal);
-		auto type = literal.get_generated_function_type();
-		auto impl = literal.codegen();
-		//Builder.SetInsertPoint(entry);
-		//Builder.CreateCall(type, impl);
+		std::unique_ptr<Literal> literal = std::make_unique<Literal>(c, &context, &module, &Builder);
+		atoms.push_back(std::move(literal));
 	}
 
 	llvm::AllocaInst* buf;
@@ -211,7 +211,7 @@ int main(int argc, char* argv[]) {
 	std::vector<llvm::Value*> loop_values;
 	std::vector<llvm::BasicBlock*> loop_blocks;
 	llvm::BasicBlock* next_iter = nullptr;
-	llvm::Value* is_equal = nullptr;
+	llvm::Value* is_accept = nullptr;
 	llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "end", main_function);
 
 	llvm::BasicBlock* first_iter = llvm::BasicBlock::Create(context, "first_iter", main_function);
@@ -220,20 +220,22 @@ int main(int argc, char* argv[]) {
 	Builder.CreateBr(first_iter);
 	Builder.SetInsertPoint(first_iter);
 
-	for(int i = 0; i < regex.size(); i++) {
-		char c = regex[i];
+	for(int i = 0; i < atoms.size(); i++) {
+		std::unique_ptr<Atom>& atom = atoms[i];
 		llvm::Value* loop_index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), i);
 
-		llvm::Value* input = Builder.CreateLoad(
-			llvm::Type::getInt8Ty(context),
-			Builder.CreateGEP(llvm::Type::getInt8Ty(context), buf, std::vector<llvm::Value*> { loop_index })
-		);
-		is_equal = Builder.CreateICmpEQ(input, llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), c));
-		loop_values.push_back(is_equal);
+		auto insert_block = Builder.GetInsertBlock();
+		auto insert_point = Builder.GetInsertPoint();
+		llvm::Function* atom_function = atom->codegen();
+		Builder.SetInsertPoint(insert_block, insert_point);
+
+		llvm::Value* decision = Builder.CreateCall(atom_function->getFunctionType(), atom_function, std::vector<llvm::Value*> { buf, loop_index } );
+		is_accept = Builder.CreateICmpEQ(decision, llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), static_cast<int32_t>(AcceptDecision::Accept)));
+		loop_values.push_back(is_accept);
 
 		next_iter = llvm::BasicBlock::Create(context, "next_iter", main_function);
 		loop_blocks.push_back(next_iter);
-		Builder.CreateCondBr(is_equal, next_iter, end);
+		Builder.CreateCondBr(is_accept, next_iter, end);
 
 		Builder.SetInsertPoint(next_iter);
 	}
@@ -244,12 +246,12 @@ int main(int argc, char* argv[]) {
 
 	Builder.SetInsertPoint(end);
 	if (regex.size()) {
-		llvm::PHINode* resolved_is_equal = Builder.CreatePHI(llvm::Type::getInt1Ty(context), regex.size() + 1);
+		llvm::PHINode* resolved_is_accept = Builder.CreatePHI(llvm::Type::getInt1Ty(context), regex.size() + 1);
 		for(int i = 0; i < loop_values.size(); i++) {
-			resolved_is_equal->addIncoming(loop_values[i], loop_blocks[i]);
+			resolved_is_accept->addIncoming(loop_values[i], loop_blocks[i]);
 		}
 
-		Builder.CreateRet(Builder.CreateIntCast(Builder.CreateNot(resolved_is_equal), llvm::Type::getInt32Ty(context), false));
+		Builder.CreateRet(Builder.CreateIntCast(Builder.CreateNot(resolved_is_accept), llvm::Type::getInt32Ty(context), false));
 	} else {
 		Builder.CreateRet(llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), 0, true));
 	}
