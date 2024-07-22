@@ -181,9 +181,11 @@ int main(int argc, char* argv[]) {
 
 	std::string regex = argv[1];
 
+	/*
 	std::vector<llvm::Type*> puts_args_type(1, llvm::Type::getInt8Ty(context)->getPointerTo());
 	llvm::FunctionType* puts_type = llvm::FunctionType::get(llvm::Type::getInt32Ty(context), llvm::ArrayRef(puts_args_type), false);
 	llvm::Function* puts_function = llvm::Function::Create(puts_type, llvm::Function::ExternalLinkage, "puts", &module);
+	*/
 
 	// main function
 	std::vector<llvm::Type*> main_args_type;
@@ -221,7 +223,7 @@ int main(int argc, char* argv[]) {
 	Builder.CreateBr(first_iter);
 	Builder.SetInsertPoint(first_iter);
 
-	for(int i = 0; i < atoms.size(); i++) {
+	for(size_t i = 0; i < atoms.size(); i++) {
 		std::unique_ptr<Atom>& atom = atoms[i];
 		llvm::Value* loop_index = llvm::ConstantInt::get(llvm::Type::getInt32Ty(context), i);
 
@@ -248,7 +250,7 @@ int main(int argc, char* argv[]) {
 	Builder.SetInsertPoint(end);
 	if (regex.size()) {
 		llvm::PHINode* resolved_is_accept = Builder.CreatePHI(llvm::Type::getInt1Ty(context), regex.size() + 1);
-		for(int i = 0; i < loop_values.size(); i++) {
+		for(size_t i = 0; i < loop_values.size(); i++) {
 			resolved_is_accept->addIncoming(loop_values[i], loop_blocks[i]);
 		}
 
