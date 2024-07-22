@@ -1,10 +1,11 @@
-﻿cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.22)
 if(COMMAND cmake_policy)
 	cmake_policy(SET CMP0003 NEW)
 endif(COMMAND cmake_policy)
 
 project(RegexCompiler)
 
+set(CMAKE_CXX_STANDARD 17)
 find_package(LLVM 14 REQUIRED CONFIG)
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
