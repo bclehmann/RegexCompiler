@@ -14,6 +14,7 @@
 #include "Literal.h"
 #include "StringStartMetacharacter.h"
 #include "StringEndMetacharacter.h"
+#include "Digit.h"
 #include "AcceptDecision.h"
 #include "TypeProvider.h"
 #include "ConstantProvider.h"
@@ -125,17 +126,28 @@ int main(int argc, char* argv[]) {
 	ConstantProvider constant_provider(type_provider);
 
 	std::vector<std::unique_ptr<Atom>> atoms;
+	bool prev_was_escape = false;
 	for(char c : regex) {
-		if (c == '^') { // TODO: Escape characters
+		if (c == '^' && !prev_was_escape) { // TODO: Escape characters
 			std::unique_ptr<StringStartMetacharacter> metachar = std::make_unique<StringStartMetacharacter>(&context, &module, &Builder);
 			atoms.push_back(std::move(metachar));
-		} else if (c == '$') {
+		} else if (c == '$' && !prev_was_escape) {
 			std::unique_ptr<StringEndMetacharacter> metachar = std::make_unique<StringEndMetacharacter>(&context, &module, &Builder);
 			atoms.push_back(std::move(metachar));
-		} else {
+		} else if (c == 'd' && prev_was_escape) {
+			std::unique_ptr<Digit> digit = std::make_unique<Digit>(&context, &module, &Builder);
+			atoms.push_back(std::move(digit));
+		} else if (c != '\\' || (c == '\\' && prev_was_escape)) {
 			std::unique_ptr<Literal> literal = std::make_unique<Literal>(c, &context, &module, &Builder);
 			atoms.push_back(std::move(literal));
 		}
+
+		prev_was_escape = c == '\\' && !prev_was_escape;
+	}
+
+	if (prev_was_escape) {
+		std::cout << "Invalid regex: Trailing unescaped \\\n";
+		return 1;
 	}
 
 	std::vector<llvm::Type*> main_args_type;

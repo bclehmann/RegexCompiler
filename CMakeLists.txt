@@ -32,6 +32,7 @@ add_executable(RegexCompiler
 	ConstantProvider.cpp
 	StringStartMetacharacter.cpp
 	StringEndMetacharacter.cpp
+	Digit.cpp
 )
 
 llvm_map_components_to_libnames(llvm_libs support core irreader)
