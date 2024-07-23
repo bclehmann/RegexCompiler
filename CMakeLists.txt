@@ -25,7 +25,7 @@ message(STATUS "ENV: ${ENV}")
 message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 
 add_compile_options(-Wall -Wextra -Wpedantic)
-add_executable(RegexCompiler "main.cpp")
+add_executable(RegexCompiler main.cpp Literal.cpp TypeProvider.cpp ConstantProvider.cpp)
 
 llvm_map_components_to_libnames(llvm_libs support core irreader)
 
