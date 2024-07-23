@@ -13,6 +13,7 @@
 #include "Atom.h"
 #include "Literal.h"
 #include "StringStartMetacharacter.h"
+#include "StringEndMetacharacter.h"
 #include "AcceptDecision.h"
 #include "TypeProvider.h"
 #include "ConstantProvider.h"
@@ -127,6 +128,9 @@ int main(int argc, char* argv[]) {
 	for(char c : regex) {
 		if (c == '^') { // TODO: Escape characters
 			std::unique_ptr<StringStartMetacharacter> metachar = std::make_unique<StringStartMetacharacter>(&context, &module, &Builder);
+			atoms.push_back(std::move(metachar));
+		} else if (c == '$') {
+			std::unique_ptr<StringEndMetacharacter> metachar = std::make_unique<StringEndMetacharacter>(&context, &module, &Builder);
 			atoms.push_back(std::move(metachar));
 		} else {
 			std::unique_ptr<Literal> literal = std::make_unique<Literal>(c, &context, &module, &Builder);
