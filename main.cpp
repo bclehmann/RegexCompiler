@@ -12,6 +12,7 @@
 #include <llvm/IR/Constants.h>
 #include "Atom.h"
 #include "Literal.h"
+#include "StringStartMetacharacter.h"
 #include "AcceptDecision.h"
 #include "TypeProvider.h"
 #include "ConstantProvider.h"
@@ -124,8 +125,13 @@ int main(int argc, char* argv[]) {
 
 	std::vector<std::unique_ptr<Atom>> atoms;
 	for(char c : regex) {
-		std::unique_ptr<Literal> literal = std::make_unique<Literal>(c, &context, &module, &Builder);
-		atoms.push_back(std::move(literal));
+		if (c == '^') { // TODO: Escape characters
+			std::unique_ptr<StringStartMetacharacter> metachar = std::make_unique<StringStartMetacharacter>(&context, &module, &Builder);
+			atoms.push_back(std::move(metachar));
+		} else {
+			std::unique_ptr<Literal> literal = std::make_unique<Literal>(c, &context, &module, &Builder);
+			atoms.push_back(std::move(literal));
+		}
 	}
 
 	std::vector<llvm::Type*> main_args_type;
@@ -144,7 +150,7 @@ int main(int argc, char* argv[]) {
 	Builder.CreateBr(readToBuf);
 
 	llvm::BasicBlock* eval_loop = llvm::BasicBlock::Create(context, "eval_loop", main_function);
-	llvm::BasicBlock* eval_consume_char = llvm::BasicBlock::Create(context, "eval_consume_char", main_function);
+	llvm::BasicBlock* eval_consume_and_retry = llvm::BasicBlock::Create(context, "eval_consume_and_retry", main_function);
 	llvm::BasicBlock* eval_reject_char = llvm::BasicBlock::Create(context, "eval_reject_char", main_function);
 
 	llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "end", main_function);
@@ -156,23 +162,23 @@ int main(int argc, char* argv[]) {
 	Builder.CreateBr(eval_loop);
 
 	Builder.SetInsertPoint(eval_loop);
-	llvm::PHINode* string_index = Builder.CreatePHI(type_provider.getInt32(), 0);
-	string_index->addIncoming(constant_provider.getInt32(0), post_loop);
-	string_index->addIncoming(Builder.CreateAdd(string_index, constant_provider.getInt32(1)), eval_consume_char);
+	llvm::PHINode* string_start_index = Builder.CreatePHI(type_provider.getInt32(), 0);
+	string_start_index->addIncoming(constant_provider.getInt32(0), post_loop);
+	string_start_index->addIncoming(Builder.CreateAdd(string_start_index, constant_provider.getInt32(1)), eval_consume_and_retry);
 
 	llvm::BasicBlock* first_atom_iter = llvm::BasicBlock::Create(context, "first_atom_iter", main_function);
 
 	Builder.CreateBr(first_atom_iter);
 
-	Builder.SetInsertPoint(eval_consume_char);
+	Builder.SetInsertPoint(eval_consume_and_retry);
 	Builder.CreateBr(eval_loop);
 
 	Builder.SetInsertPoint(first_atom_iter);
+	llvm::Value* num_chars_consumed = constant_provider.getInt32(0);
 
 	for(size_t i = 0; i < atoms.size(); i++) {
 		std::unique_ptr<Atom>& atom = atoms[i];
-		llvm::Value* loop_index = constant_provider.getInt32(i);
-		llvm::Value* input_index = Builder.CreateAdd(loop_index, string_index);
+		llvm::Value* input_index = Builder.CreateAdd(num_chars_consumed, string_start_index);
 
 		llvm::BasicBlock* atom_iter_body = llvm::BasicBlock::Create(context, "atom_iter_body", main_function);
 
@@ -187,17 +193,17 @@ int main(int argc, char* argv[]) {
 		llvm::Value* decision = Builder.CreateCall(
 			atom_function->getFunctionType(),
 			atom_function,
-			std::vector<llvm::Value*> { buf, input_index }
+			std::vector<llvm::Value*> { buf, input_index, input_len }
 		);
-		llvm::Value* is_accept = Builder.CreateICmpEQ(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept)));
-		resolved_is_accept->addIncoming(is_accept, atom_iter_body);
+		llvm::Value* is_accept = Builder.CreateICmpNE(
+			Builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept))),
+			constant_provider.getInt32(0)
+		);
+		llvm::Value* num_chars_to_consume = Builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::ConsumeMask)));
+		num_chars_consumed = Builder.CreateAdd(num_chars_consumed, num_chars_to_consume);
 
 		llvm::BasicBlock* next_atom_iter = llvm::BasicBlock::Create(context, "next_atom_iter", main_function);
-
-		llvm::SwitchInst* switch_inst = Builder.CreateSwitch(decision, eval_consume_char, 3);
-		switch_inst->addCase(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept)), next_atom_iter);
-		switch_inst->addCase(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Consume)), eval_consume_char);
-		switch_inst->addCase(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Reject)), eval_reject_char);
+		Builder.CreateCondBr(is_accept, next_atom_iter, eval_consume_and_retry);
 
 		Builder.SetInsertPoint(next_atom_iter);
 	}

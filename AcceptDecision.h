@@ -1,9 +1,8 @@
 #pragma once
 #include <cstdint>
 
-//TODO: This probably will need to add Ignore for optionals, as they can fail to match and not advance the cursor
-enum class AcceptDecision : int32_t {
-	Consume, // Not a match, but can try again with a later substring
-	Accept, // Match
-	Reject // Not a match
+enum class AcceptDecision : uint32_t {
+	// i.e. the top bit determines if this is accepted, and the rest determine how many characters to consume
+	Accept = 0x8000'0000,
+	ConsumeMask = 0x7FFF'FFFF
 };

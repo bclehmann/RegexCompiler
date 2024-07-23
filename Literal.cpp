@@ -17,8 +17,8 @@ Literal::Literal(char to_match, llvm::LLVMContext* context, llvm::Module* module
 {
 	TypeProvider type_provider(*context);
 	generated_function_type = llvm::FunctionType::get(
-		type_provider.getInt32(),
-		std::vector<llvm::Type*> { type_provider.getBytePtr(), type_provider.getInt32() }, // buf and index
+		type_provider.getInt32(), // AcceptDecision
+		std::vector<llvm::Type*> { type_provider.getBytePtr(), type_provider.getInt32(), type_provider.getInt32() }, // buf, index, and len
 		false
 	);
 }
@@ -47,11 +47,11 @@ llvm::Function* Literal::codegen() {
 
 	llvm::BasicBlock* matches = llvm::BasicBlock::Create(*context, "matches", generated_function);
 	builder->SetInsertPoint(matches);
-	builder->CreateRet(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept)));
+	builder->CreateRet(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept) | 1));
 
 	llvm::BasicBlock* does_not_match = llvm::BasicBlock::Create(*context, "does_not_match", generated_function);
 	builder->SetInsertPoint(does_not_match);
-	builder->CreateRet(constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Consume)));
+	builder->CreateRet(constant_provider.getInt32(1));
 
 	builder->SetInsertPoint(entry);
 	builder->CreateCondBr(is_equal, matches, does_not_match);
