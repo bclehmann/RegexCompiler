@@ -15,16 +15,24 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
 SET(ENV "DEBUG" CACHE STRING "Either DEBUG or RELEASE")
 
-if("${ENV}" STREQUAL "RELEASE")
-	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+if (MSVC)
+	if("${ENV}" STREQUAL "RELEASE")
+		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2")
+	else()
+		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /DEBUG")
+	endif()
+	add_compile_options(/W4)
 else()
-	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+		if("${ENV}" STREQUAL "RELEASE")
+		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+	else()
+		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+	endif()
+	add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
-
 message(STATUS "ENV: ${ENV}")
 message(STATUS "CMAKE_CXX_FLAGS: ${CMAKE_CXX_FLAGS}")
 
-add_compile_options(-Wall -Wextra -Wpedantic)
 add_executable(RegexCompiler
 	main.cpp
 	Literal.cpp
