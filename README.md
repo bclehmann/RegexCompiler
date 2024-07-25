@@ -8,7 +8,7 @@ The code isn't amazing, this project was mostly to get my toes into compilers ag
 ## Building
 
 Ensure you have LLVM installed (or compile it yourself, though note that this takes several hours even on powerful hardware). If you go down the route of compiling LLVM yourself I highly recommend
-you ensure that ninja is your configured build system in cmake, it will make compilation significantly faster (though still quite slow).
+you ensure that Ninja is your configured build system in cmake, it will make compilation significantly faster (though still quite slow).
 
 On Linux it may be preinstalled or available easily within your package manager. On Windows I recommend going to https://github.com/vovkos/llvm-package-windows, as the LLVM github repo only provides
 LLVM-based tools like clang and binaries for the LLVM-C API, not the C++ API used by this project. I have not tried building this on MacOS but I don't anticipate any problems.
@@ -27,6 +27,13 @@ levels.
 Further, the `ENV` cmake variable (defaults to `DEBUG`) adds these flags based on its value:
 - `ENV=DEBUG` sets `-g` on most compilers and `/DEBUG` on MSVC
 - `ENV=RELEASE` sets `-O3` on most compilers and `/O2` on MSVC
+
+If you're using Makefiles I strongly recommend passing `-jN` to run N separate jobs in parallel, significantly improving compile times. They're not too bad, but it's nearing 9 seconds singlethreaded,
+likely due to all the LLVM header files that need to be included. This can be reduced to about 2.5 seconds. This should be handled for you if you use Ninja, and I don't know enough to comment on
+other build systems.
+
+Note that Ninja will try to use as many threads as you have, which can cause it to run out of memory and fail when building LLVM itself. You might want to set it to manually set `-jN` to a more
+conservative value if you run into issues. Fortunately you will be able to restart it from where it left off, but it's unfortunate that it needs some babysitting.
 
 ## Use
 
