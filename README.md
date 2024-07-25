@@ -1,6 +1,6 @@
 # RegexCompiler
 
-This is a compiler based on LLLVM (version 14.0.6, from June 2022) that compiles regular expressions, which gives a ~50% speedup over conventional regex tools, at the cost of requiring that they be precompiled.
+This is a compiler based on LLLVM (version 14.0.6, from June 2022) that compiles regular expressions, which gives a ~70% speedup over conventional regex tools, at the cost of requiring that they be precompiled.
 I have not tested this project on newer versions of LLVM.
 
 The code isn't amazing, this project was mostly to get my toes into compilers again.
