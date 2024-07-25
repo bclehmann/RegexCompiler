@@ -1,5 +1,0 @@
-Works with LLVM 14, but it uses the C bindings rather than the C++ API (for now)
-
-Run generated IR (.ll file) with `lli ./out.ll`
-
-Compile generated IR file with `clang ./out.ll -x ir`
