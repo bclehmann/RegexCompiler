@@ -15,3 +15,7 @@ llvm::ConstantInt* ConstantProvider::getByte(uint8_t value, bool is_signed) {
 llvm::ConstantInt* ConstantProvider::getInt32(uint32_t value, bool is_signed) {
 	return llvm::ConstantInt::get(type_provider.getInt32(), value, is_signed);
 }
+
+llvm::ConstantInt* ConstantProvider::getInt64(uint64_t value, bool is_signed) {
+	return llvm::ConstantInt::get(type_provider.getInt64(), value, is_signed);
+}

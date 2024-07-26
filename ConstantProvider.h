@@ -13,6 +13,7 @@ public:
 	llvm::ConstantInt* getBit(uint8_t value);
 	llvm::ConstantInt* getByte(uint8_t value, bool is_signed=false);
 	llvm::ConstantInt* getInt32(uint32_t value, bool is_signed=false);
+	llvm::ConstantInt* getInt64(uint64_t value, bool is_signed=false);
 private:
 	TypeProvider& type_provider;
 };

@@ -111,6 +111,239 @@ llvm::BasicBlock* buildReadToBuf(llvm::LLVMContext& context, llvm::IRBuilder<>& 
 	return pre_init_loop;
 }
 
+llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& builder, llvm::Module& module) {
+	TypeProvider type_provider(context);
+	ConstantProvider constant_provider(type_provider);
+	llvm::FunctionType* read_input_function_type = llvm::FunctionType::get(
+		type_provider.getBytePtr(), // buf
+		std::vector<llvm::Type*> {},
+		false
+	);
+
+	std::string read_input_function_name = "read_input";
+	llvm::Function* existing = module.getFunction(read_input_function_name);
+
+	if (existing) {
+		return existing;
+	}
+
+	llvm::Function* panic_function = buildPanic(context, builder, module);
+
+	llvm::Function* read_input = llvm::Function::Create(read_input_function_type, llvm::Function::PrivateLinkage, read_input_function_name, module);
+	llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", read_input);
+
+	llvm::FunctionType* realloc_type = llvm::FunctionType::get(
+		type_provider.getBytePtr(),
+		std::vector<llvm::Type*> { type_provider.getBytePtr(), type_provider.getInt32() }, // ptr, new_size,
+		false
+	);
+	llvm::Function* existing_realloc = module.getFunction("realloc");
+	llvm::Function* realloc_function = existing_realloc
+		? existing_realloc
+		: llvm::Function::Create(realloc_type, llvm::Function::ExternalLinkage, "realloc", module);
+
+	llvm::FunctionType* getchar_type = llvm::FunctionType::get(type_provider.getInt32(), std::vector<llvm::Type*> {}, false);
+	llvm::Function* existing_getchar = module.getFunction("getchar");
+	llvm::Function* getchar_function = existing_getchar
+		? existing_getchar
+		: llvm::Function::Create(getchar_type, llvm::Function::ExternalLinkage, "getchar", module);
+
+	llvm::BasicBlock* panic = llvm::BasicBlock::Create(context, "panic", read_input);
+	llvm::BasicBlock* loop_start = llvm::BasicBlock::Create(context, "loop_start", read_input);
+	llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(context, "loop_body", read_input);
+	llvm::BasicBlock* loop_end = llvm::BasicBlock::Create(context, "loop_end", read_input);
+
+	llvm::BasicBlock* alloc = llvm::BasicBlock::Create(context, "alloc", read_input);
+	llvm::BasicBlock* needs_realloc = llvm::BasicBlock::Create(context, "needs_realloc", read_input);
+
+	builder.SetInsertPoint(entry);
+	builder.CreateBr(alloc);
+
+	builder.SetInsertPoint(needs_realloc);
+	builder.CreateBr(alloc);
+
+	builder.SetInsertPoint(alloc);
+
+	llvm::PHINode* buf_size = builder.CreatePHI(type_provider.getInt32(), 2);
+	llvm::PHINode* prev_buf = builder.CreatePHI(type_provider.getBytePtr(), 2);
+	buf_size->addIncoming(constant_provider.getInt32(1024), entry);
+	buf_size->addIncoming(
+		builder.CreateUDiv(
+			builder.CreateMul(buf_size, constant_provider.getInt32(3)),
+			constant_provider.getInt32(2)
+		),
+		needs_realloc
+	);
+
+	llvm::Value* buf = builder.CreateCall(realloc_type, realloc_function, std::vector<llvm::Value*> { prev_buf, buf_size });
+	prev_buf->addIncoming(llvm::ConstantPointerNull::get(type_provider.getBytePtr()), entry);
+	prev_buf->addIncoming(buf, needs_realloc);
+
+	llvm::BasicBlock* was_first_alloc = llvm::BasicBlock::Create(context, "was_first_alloc", read_input);
+	llvm::BasicBlock* was_not_first_alloc = llvm::BasicBlock::Create(context, "was_not_first_alloc", read_input);
+	builder.CreateCondBr(builder.CreateIsNull(prev_buf), was_first_alloc, was_not_first_alloc);
+	builder.SetInsertPoint(was_first_alloc);
+	builder.CreateBr(loop_start);
+
+	builder.SetInsertPoint(was_not_first_alloc);
+	builder.CreateCondBr(builder.CreateIsNull(buf), panic, loop_start);
+
+	builder.SetInsertPoint(loop_start);
+	llvm::PHINode* index = builder.CreatePHI(type_provider.getInt32(), 2);
+	index->addIncoming(constant_provider.getInt32(0), was_first_alloc);
+	index->addIncoming(builder.CreateAdd(index, constant_provider.getInt32(1)), was_not_first_alloc);
+	index->addIncoming(builder.CreateAdd(index, constant_provider.getInt32(1)), loop_end);
+
+	builder.CreateCondBr(
+		builder.CreateOr(
+			builder.CreateICmpEQ(index, constant_provider.getInt32(0)),
+			builder.CreateICmpUGE(index, builder.CreateSub(buf_size, constant_provider.getInt32(1)))
+		),
+		needs_realloc,
+		loop_body
+	);
+
+	builder.SetInsertPoint(loop_body);
+	llvm::BasicBlock* was_eof = llvm::BasicBlock::Create(context, "was_eof", read_input);
+	llvm::BasicBlock* was_newline = llvm::BasicBlock::Create(context, "was_newline", read_input);
+	llvm::BasicBlock* was_not_newline = llvm::BasicBlock::Create(context, "was_not_newline", read_input);
+	llvm::Value* input = builder.CreateCall(getchar_type, getchar_function);
+
+	llvm::Value* input_equals_eof = builder.CreateICmpEQ(input, constant_provider.getInt32(-1, true));
+	builder.CreateCondBr(builder.CreateICmpEQ(input, constant_provider.getInt32('\n')), was_newline, was_not_newline);
+
+	builder.SetInsertPoint(was_not_newline);
+	builder.CreateStore(
+		builder.CreateIntCast(input, type_provider.getByte(), true),
+		builder.CreateGEP(
+			type_provider.getByte(),
+			buf,
+			std::vector<llvm::Value*> { index }
+		)
+	);
+	builder.CreateCondBr(input_equals_eof, was_eof, loop_end);
+
+	builder.SetInsertPoint(was_newline);
+	builder.CreateStore(
+		constant_provider.getByte(0),
+		builder.CreateGEP(type_provider.getByte(), buf, std::vector<llvm::Value*> { index } )
+	);
+	builder.CreateBr(loop_end);
+
+	builder.SetInsertPoint(loop_end);
+	builder.CreateBr(loop_start);
+
+	builder.SetInsertPoint(was_eof);
+	builder.CreateRet(buf);
+
+	builder.SetInsertPoint(panic);
+	builder.CreateCall(panic_function->getFunctionType(), panic_function, std::vector<llvm::Value*> { builder.CreateGlobalStringPtr("Error: Could not allocate buffer") });
+	builder.CreateUnreachable();
+
+	return read_input;
+}
+
+llvm::Function* buildEvaluateLine(llvm::LLVMContext& context, llvm::IRBuilder<>& builder, llvm::Module& module, const std::vector<std::unique_ptr<Atom>>& atoms) {
+	TypeProvider type_provider(context);
+	ConstantProvider constant_provider(type_provider);
+	llvm::FunctionType* eval_line_function_type = llvm::FunctionType::get(
+		type_provider.getBit(), // Accept/Reject
+		std::vector<llvm::Type*> { type_provider.getBytePtr(), type_provider.getInt32() }, // buf and len
+		false
+	);
+
+	std::string eval_line_function_name = "eval_line";
+	llvm::Function* existing = module.getFunction(eval_line_function_name);
+
+	if (existing) {
+		return existing;
+	}
+
+	llvm::Function* eval_line = llvm::Function::Create(eval_line_function_type, llvm::Function::PrivateLinkage, eval_line_function_name, module);
+	llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", eval_line);
+	builder.SetInsertPoint(entry);
+
+	llvm::Value* buf = eval_line->args().begin();
+	llvm::Value* input_len = (eval_line->args().begin() + 1);
+
+	llvm::BasicBlock* eval_loop = llvm::BasicBlock::Create(context, "eval_loop", eval_line);
+	builder.CreateBr(eval_loop);
+	llvm::BasicBlock* eval_consume_and_retry = llvm::BasicBlock::Create(context, "eval_consume_and_retry", eval_line);
+	llvm::BasicBlock* eval_reject_char = llvm::BasicBlock::Create(context, "eval_reject_char", eval_line);
+
+	llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "end", eval_line);
+	builder.SetInsertPoint(end);
+	llvm::PHINode* resolved_is_accept = builder.CreatePHI(type_provider.getBit(), atoms.size() + 1);
+	resolved_is_accept->addIncoming(constant_provider.getBit(0), eval_reject_char);
+
+	builder.SetInsertPoint(eval_loop);
+	llvm::PHINode* string_start_index = builder.CreatePHI(type_provider.getInt32(), 0);
+	string_start_index->addIncoming(constant_provider.getInt32(0), entry);
+	string_start_index->addIncoming(builder.CreateAdd(string_start_index, constant_provider.getInt32(1)), eval_consume_and_retry);
+
+	llvm::BasicBlock* first_atom_iter = llvm::BasicBlock::Create(context, "first_atom_iter", eval_line);
+
+	builder.CreateBr(first_atom_iter);
+
+	builder.SetInsertPoint(eval_consume_and_retry);
+	builder.CreateBr(eval_loop);
+
+	builder.SetInsertPoint(first_atom_iter);
+	llvm::Value* num_chars_consumed = constant_provider.getInt32(0);
+
+	for(size_t i = 0; i < atoms.size(); i++) {
+		const std::unique_ptr<Atom>& atom = atoms[i];
+		llvm::Value* input_index = builder.CreateAdd(num_chars_consumed, string_start_index);
+
+		llvm::BasicBlock* atom_iter_body = llvm::BasicBlock::Create(context, "atom_iter_body", eval_line);
+
+		builder.CreateCondBr(builder.CreateICmpULT(input_index, input_len), atom_iter_body, eval_reject_char);
+		builder.SetInsertPoint(atom_iter_body);
+
+		auto insert_block = builder.GetInsertBlock();
+		auto insert_point = builder.GetInsertPoint();
+		llvm::Function* atom_function = atom->codegen();
+		builder.SetInsertPoint(insert_block, insert_point);
+
+		llvm::Value* decision = builder.CreateCall(
+			atom_function->getFunctionType(),
+			atom_function,
+			std::vector<llvm::Value*> { buf, input_index, input_len }
+		);
+		llvm::Value* is_accept = builder.CreateICmpNE(
+			builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept))),
+			constant_provider.getInt32(0)
+		);
+		llvm::Value* num_chars_to_consume = builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::ConsumeMask)));
+		num_chars_consumed = builder.CreateAdd(num_chars_consumed, num_chars_to_consume);
+
+		llvm::BasicBlock* next_atom_iter = llvm::BasicBlock::Create(context, "next_atom_iter", eval_line);
+		builder.CreateCondBr(is_accept, next_atom_iter, eval_consume_and_retry);
+
+		builder.SetInsertPoint(next_atom_iter);
+	}
+
+	llvm::BasicBlock* completed = llvm::BasicBlock::Create(context, "completed", eval_line);
+	builder.CreateBr(completed);
+
+	builder.SetInsertPoint(completed);
+	builder.CreateBr(end);
+
+	resolved_is_accept->addIncoming(constant_provider.getBit(1), completed);
+
+	builder.SetInsertPoint(eval_reject_char);
+	builder.CreateBr(end);
+
+	builder.SetInsertPoint(end);
+	if (atoms.size()) {
+		builder.CreateRet(resolved_is_accept);
+	} else {
+		builder.CreateRet(constant_provider.getInt32(0));
+	}
+
+	return eval_line;
+}
+
 int main(int argc, char* argv[]) {
 	if(argc < 2) {
 		std::cout << "Specify a regex\n";
@@ -155,8 +388,18 @@ int main(int argc, char* argv[]) {
 	llvm::Function* main_function = llvm::Function::Create(main_type, llvm::Function::ExternalLinkage, "main", &module);
 
 	llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", main_function);
-	Builder.SetInsertPoint(entry);
 
+	llvm::Function* read_input = buildReadInput(context, Builder, module);
+
+	Builder.SetInsertPoint(entry);
+	llvm::Value* cooler_buf = Builder.CreateCall(read_input->getFunctionType(), read_input, std::vector<llvm::Value*>{});
+	llvm::Function* existing_puts = module.getFunction("puts");
+
+	Builder.SetInsertPoint(entry);
+	Builder.CreateCall(existing_puts->getFunctionType(), existing_puts, std::vector<llvm::Value*>{cooler_buf});
+	Builder.CreateRet(constant_provider.getInt32(0));
+
+#if 0
 	llvm::AllocaInst* buf;
 	llvm::Value* input_len;
 	llvm::BasicBlock* post_loop = llvm::BasicBlock::Create(context, "post_loop", main_function);
@@ -165,83 +408,13 @@ int main(int argc, char* argv[]) {
 	Builder.SetInsertPoint(entry);
 	Builder.CreateBr(readToBuf);
 
-	llvm::BasicBlock* eval_loop = llvm::BasicBlock::Create(context, "eval_loop", main_function);
-	llvm::BasicBlock* eval_consume_and_retry = llvm::BasicBlock::Create(context, "eval_consume_and_retry", main_function);
-	llvm::BasicBlock* eval_reject_char = llvm::BasicBlock::Create(context, "eval_reject_char", main_function);
-
-	llvm::BasicBlock* end = llvm::BasicBlock::Create(context, "end", main_function);
-	Builder.SetInsertPoint(end);
-	llvm::PHINode* resolved_is_accept = Builder.CreatePHI(type_provider.getBit(), regex.size() + 1);
-	resolved_is_accept->addIncoming(constant_provider.getBit(0), eval_reject_char);
+	llvm::Function* eval_line = buildEvaluateLine(context, Builder, module, atoms);
 
 	Builder.SetInsertPoint(post_loop);
-	Builder.CreateBr(eval_loop);
+	llvm::Value* accept = Builder.CreateCall(eval_line->getFunctionType(), eval_line, std::vector<llvm::Value*> { buf, input_len });
 
-	Builder.SetInsertPoint(eval_loop);
-	llvm::PHINode* string_start_index = Builder.CreatePHI(type_provider.getInt32(), 0);
-	string_start_index->addIncoming(constant_provider.getInt32(0), post_loop);
-	string_start_index->addIncoming(Builder.CreateAdd(string_start_index, constant_provider.getInt32(1)), eval_consume_and_retry);
-
-	llvm::BasicBlock* first_atom_iter = llvm::BasicBlock::Create(context, "first_atom_iter", main_function);
-
-	Builder.CreateBr(first_atom_iter);
-
-	Builder.SetInsertPoint(eval_consume_and_retry);
-	Builder.CreateBr(eval_loop);
-
-	Builder.SetInsertPoint(first_atom_iter);
-	llvm::Value* num_chars_consumed = constant_provider.getInt32(0);
-
-	for(size_t i = 0; i < atoms.size(); i++) {
-		std::unique_ptr<Atom>& atom = atoms[i];
-		llvm::Value* input_index = Builder.CreateAdd(num_chars_consumed, string_start_index);
-
-		llvm::BasicBlock* atom_iter_body = llvm::BasicBlock::Create(context, "atom_iter_body", main_function);
-
-		Builder.CreateCondBr(Builder.CreateICmpULT(input_index, input_len), atom_iter_body, eval_reject_char);
-		Builder.SetInsertPoint(atom_iter_body);
-
-		auto insert_block = Builder.GetInsertBlock();
-		auto insert_point = Builder.GetInsertPoint();
-		llvm::Function* atom_function = atom->codegen();
-		Builder.SetInsertPoint(insert_block, insert_point);
-
-		llvm::Value* decision = Builder.CreateCall(
-			atom_function->getFunctionType(),
-			atom_function,
-			std::vector<llvm::Value*> { buf, input_index, input_len }
-		);
-		llvm::Value* is_accept = Builder.CreateICmpNE(
-			Builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::Accept))),
-			constant_provider.getInt32(0)
-		);
-		llvm::Value* num_chars_to_consume = Builder.CreateAnd(decision, constant_provider.getInt32(static_cast<int32_t>(AcceptDecision::ConsumeMask)));
-		num_chars_consumed = Builder.CreateAdd(num_chars_consumed, num_chars_to_consume);
-
-		llvm::BasicBlock* next_atom_iter = llvm::BasicBlock::Create(context, "next_atom_iter", main_function);
-		Builder.CreateCondBr(is_accept, next_atom_iter, eval_consume_and_retry);
-
-		Builder.SetInsertPoint(next_atom_iter);
-	}
-
-	llvm::BasicBlock* completed = llvm::BasicBlock::Create(context, "completed", main_function);
-	Builder.CreateBr(completed);
-
-	Builder.SetInsertPoint(completed);
-	Builder.CreateBr(end);
-
-	resolved_is_accept->addIncoming(constant_provider.getBit(1), completed);
-
-	Builder.SetInsertPoint(eval_reject_char);
-	Builder.CreateBr(end);
-
-	Builder.SetInsertPoint(end);
-	if (regex.size()) {
-		Builder.CreateRet(Builder.CreateIntCast(Builder.CreateNot(resolved_is_accept), type_provider.getInt32(), false));
-	} else {
-		Builder.CreateRet(constant_provider.getInt32(0));
-	}
-
+	Builder.CreateRet(Builder.CreateIntCast(Builder.CreateNot(accept), type_provider.getInt32(), false));
+#endif
 	std::error_code ec;
 	llvm::raw_fd_ostream output("out.ll", ec);
 	module.print(output, nullptr);
