@@ -333,8 +333,25 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 	builder.CreateBr(line_end);
 
 	builder.SetInsertPoint(was_eof);
+	llvm::BasicBlock* eof_on_empty_line = llvm::BasicBlock::Create(context, "eof_on_empty_line", read_input);
+	llvm::BasicBlock* eof_on_unempty_line = llvm::BasicBlock::Create(context, "eof_on_unempty_line", read_input);
+
+	builder.CreateCondBr(builder.CreateICmpEQ(line_len, constant_provider.getInt32(0)), eof_on_empty_line, eof_on_unempty_line);
+
+	builder.SetInsertPoint(eof_on_unempty_line);
 	builder.CreateStore(
 		builder.CreateNeg(line_len),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			builder.CreatePointerCast(buf, type_provider.getInt32Ptr()),
+			std::vector<llvm::Value*> { builder.CreateUDiv(line_start_index, constant_provider.getInt32(sizeof(int32_t))) }
+		)
+	);
+	builder.CreateRet(buf);
+
+	builder.SetInsertPoint(eof_on_empty_line);
+	builder.CreateStore(
+		constant_provider.getInt32(std::numeric_limits<std::int32_t>::min()),
 		builder.CreateGEP(
 			type_provider.getInt32(),
 			builder.CreatePointerCast(buf, type_provider.getInt32Ptr()),
