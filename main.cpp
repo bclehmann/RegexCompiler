@@ -10,6 +10,8 @@
 #include <llvm/IR/Type.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/raw_os_ostream.h>
 #include "Atom.h"
 #include "Literal.h"
 #include "StringStartMetacharacter.h"
@@ -149,6 +151,8 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 		: llvm::Function::Create(getchar_type, llvm::Function::ExternalLinkage, "getchar", module);
 
 	llvm::BasicBlock* panic = llvm::BasicBlock::Create(context, "panic", read_input);
+	llvm::BasicBlock* line_start = llvm::BasicBlock::Create(context, "line_start", read_input);
+	llvm::BasicBlock* line_end = llvm::BasicBlock::Create(context, "line_end", read_input);
 	llvm::BasicBlock* loop_start = llvm::BasicBlock::Create(context, "loop_start", read_input);
 	llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(context, "loop_body", read_input);
 	llvm::BasicBlock* loop_end = llvm::BasicBlock::Create(context, "loop_end", read_input);
@@ -159,21 +163,21 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 
 	builder.SetInsertPoint(entry);
 
-#if 0
-	llvm::FunctionType* trap_intrinsic_type = llvm::FunctionType::get(
-		type_provider.getVoid(),
-		std::vector<llvm::Type*> {},
-		false
+	llvm::Value* line_start_ref = builder.CreateAlloca(type_provider.getInt32(), constant_provider.getInt32(1), "line_start_ref");
+	builder.CreateStore(
+		constant_provider.getInt32(0),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			line_start_ref,
+			std::vector<llvm::Value*> { constant_provider.getInt32(0) }
+		)
 	);
-	llvm::Function* trap_intrinsic = llvm::Function::Create(trap_intrinsic_type, llvm::Function::ExternalLinkage, "llvm.debugtrap", module);
-	builder.CreateCall(trap_intrinsic->getFunctionType(), trap_intrinsic, std::vector<llvm::Value*> { });
-#endif
 
 	builder.CreateBr(first_alloc);
 
 	builder.SetInsertPoint(first_alloc);
-	llvm::Value* buf_ref = builder.CreateAlloca(type_provider.getBytePtr(), constant_provider.getInt32(8), "buf_ref");
-	llvm::Value* buf_size_ref = builder.CreateAlloca(type_provider.getInt32(), constant_provider.getInt32(4), "buf_size_ref");
+	llvm::Value* buf_ref = builder.CreateAlloca(type_provider.getBytePtr(), constant_provider.getInt32(1), "buf_ref");
+	llvm::Value* buf_size_ref = builder.CreateAlloca(type_provider.getInt32(), constant_provider.getInt32(1), "buf_size_ref");
 	const int init_size = 1024;
 	llvm::Value* first_buf = builder.CreateCall(realloc_type, realloc_function, std::vector<llvm::Value*> {
 		llvm::ConstantPointerNull::get(type_provider.getBytePtr()),
@@ -196,7 +200,7 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 		)
 	);
 
-	builder.CreateBr(loop_start);
+	builder.CreateBr(line_start);
 
 	builder.SetInsertPoint(needs_realloc);
 	builder.CreateBr(alloc);
@@ -224,7 +228,6 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 		)
 	);
 
-
 	llvm::Value* new_buf = builder.CreateCall(realloc_type, realloc_function, std::vector<llvm::Value*> {
 		builder.CreateLoad(
 			type_provider.getBytePtr(),
@@ -251,11 +254,25 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 	builder.SetInsertPoint(after_alloc);
 	builder.CreateCondBr(builder.CreateIsNull(new_buf), panic, loop_start);
 
+	builder.SetInsertPoint(line_start);
+	llvm::Value* line_start_index = builder.CreateLoad(
+		type_provider.getInt32(),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			line_start_ref,
+			std::vector<llvm::Value*> { constant_provider.getInt32(0) }
+		)
+	);
+
+	builder.CreateBr(loop_start);
+
 	builder.SetInsertPoint(loop_start);
-	llvm::PHINode* index = builder.CreatePHI(type_provider.getInt32(), 2);
-	index->addIncoming(constant_provider.getInt32(0), first_alloc);
+	llvm::PHINode* index = builder.CreatePHI(type_provider.getInt32(), 3);
+	index->addIncoming(constant_provider.getInt32(sizeof(int32_t)), line_start);
 	index->addIncoming(index, after_alloc);
 	index->addIncoming(builder.CreateAdd(index, constant_provider.getInt32(1)), loop_end);
+
+	llvm::Value* true_index = builder.CreateAdd(line_start_index, index);
 
 	llvm::Value* buf_size = builder.CreateLoad(
 		type_provider.getInt32(),
@@ -267,7 +284,7 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 	);
 
 	builder.CreateCondBr(
-		builder.CreateICmpUGE(index, builder.CreateSub(buf_size, constant_provider.getInt32(1))),
+		builder.CreateICmpUGE(true_index, builder.CreateSub(buf_size, constant_provider.getInt32(16))), // Since we may need to terminate a line, which uses up a lot of space
 		needs_realloc,
 		loop_body
 	);
@@ -287,7 +304,9 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 	llvm::BasicBlock* was_not_newline = llvm::BasicBlock::Create(context, "was_not_newline", read_input);
 	llvm::Value* input = builder.CreateCall(getchar_type, getchar_function);
 
-	llvm::Value* input_equals_eof = builder.CreateICmpEQ(input, constant_provider.getInt32(-1, false));
+	llvm::Value* input_equals_eof = builder.CreateICmpEQ(input, constant_provider.getInt32(EOF, false));
+	llvm::Value* line_len = builder.CreateSub(true_index, builder.CreateAdd(line_start_index, constant_provider.getInt32(sizeof(int32_t))));
+
 	builder.CreateCondBr(builder.CreateICmpEQ(input, constant_provider.getInt32('\n')), was_newline, was_not_newline);
 
 	builder.SetInsertPoint(was_not_newline);
@@ -296,23 +315,109 @@ llvm::Function* buildReadInput(llvm::LLVMContext& context, llvm::IRBuilder<>& bu
 		builder.CreateGEP(
 			type_provider.getByte(),
 			buf,
-			std::vector<llvm::Value*> { index }
+			std::vector<llvm::Value*> { true_index }
 		)
 	);
+
 	builder.CreateCondBr(input_equals_eof, was_eof, loop_end);
 
 	builder.SetInsertPoint(was_newline);
 	builder.CreateStore(
 		constant_provider.getByte(0),
-		builder.CreateGEP(type_provider.getByte(), buf, std::vector<llvm::Value*> { index } )
+		builder.CreateGEP(
+			type_provider.getByte(),
+			buf,
+			std::vector<llvm::Value*> { true_index }
+		)
 	);
-	builder.CreateBr(loop_end);
+	builder.CreateBr(line_end);
+
+	builder.SetInsertPoint(was_eof);
+	builder.CreateStore(
+		builder.CreateNeg(line_len),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			builder.CreatePointerCast(buf, type_provider.getInt32Ptr()),
+			std::vector<llvm::Value*> { builder.CreateUDiv(line_start_index, constant_provider.getInt32(sizeof(int32_t))) }
+		)
+	);
+	builder.CreateRet(buf);
 
 	builder.SetInsertPoint(loop_end);
 	builder.CreateBr(loop_start);
 
-	builder.SetInsertPoint(was_eof);
-	builder.CreateRet(buf);
+	builder.SetInsertPoint(line_end);
+	llvm::raw_os_ostream ostream(std::cerr);
+	index->getType()->print(ostream, true);
+	ostream << '\n';
+	builder.CreateAdd(line_start_index, constant_provider.getInt32(sizeof(int32_t)))->getType()->print(ostream, true);
+	ostream << '\n';
+	builder.CreateSub(index, builder.CreateAdd(line_start_index, constant_provider.getInt32(sizeof(int32_t))))->getType()->print(ostream, true);
+	ostream << '\n';
+
+	ostream.flush();
+	builder.CreateStore(
+		line_len,
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			builder.CreatePointerCast(buf, type_provider.getInt32Ptr()),
+			std::vector<llvm::Value*> { builder.CreateUDiv(line_start_index, constant_provider.getInt32(sizeof(int32_t))) }
+		)
+	);
+
+	builder.CreateStore(
+		builder.CreateAdd(true_index, constant_provider.getInt32(1)),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			line_start_ref,
+			std::vector<llvm::Value*> { constant_provider.getInt32(0) }
+		)
+	);
+	llvm::BasicBlock* align_loop = llvm::BasicBlock::Create(context, "align_loop", read_input);
+	llvm::BasicBlock* goto_next_line = llvm::BasicBlock::Create(context, "goto_next_line", read_input);
+	llvm::BasicBlock* moar_align = llvm::BasicBlock::Create(context, "moar_align", read_input);
+
+	builder.CreateBr(align_loop);
+
+	builder.SetInsertPoint(align_loop);
+	llvm::Value* align_index = builder.CreateLoad(
+		type_provider.getInt32(),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			line_start_ref,
+			std::vector<llvm::Value*> { constant_provider.getInt32(0) }
+		)
+	);
+
+	builder.CreateStore(
+		constant_provider.getByte(0),
+		builder.CreateGEP(
+			type_provider.getByte(),
+			buf,
+			std::vector<llvm::Value*> { align_index }
+		)
+	);
+
+	builder.CreateCondBr(
+		builder.CreateICmpEQ(builder.CreateURem(align_index, constant_provider.getInt32(8)), constant_provider.getInt32(0)),
+		goto_next_line,
+		moar_align
+	);
+
+	builder.SetInsertPoint(moar_align);
+	builder.CreateStore(
+		builder.CreateAdd(align_index, constant_provider.getInt32(1)),
+		builder.CreateGEP(
+			type_provider.getInt32(),
+			line_start_ref,
+			std::vector<llvm::Value*> { constant_provider.getInt32(0) }
+		)
+	);
+
+	builder.CreateBr(align_loop);
+
+	builder.SetInsertPoint(goto_next_line);
+	builder.CreateBr(line_start);
 
 	builder.SetInsertPoint(panic);
 	builder.CreateCall(panic_function->getFunctionType(), panic_function, std::vector<llvm::Value*> { builder.CreateGlobalStringPtr("Error: Could not allocate buffer") });
@@ -470,7 +575,19 @@ int main(int argc, char* argv[]) {
 	llvm::Function* read_input = buildReadInput(context, Builder, module);
 
 	Builder.SetInsertPoint(entry);
+
 	llvm::Value* cooler_buf = Builder.CreateCall(read_input->getFunctionType(), read_input, std::vector<llvm::Value*>{});
+
+#if 1
+	llvm::FunctionType* trap_intrinsic_type = llvm::FunctionType::get(
+		type_provider.getVoid(),
+		std::vector<llvm::Type*> {},
+		false
+	);
+	llvm::Function* trap_intrinsic = llvm::Function::Create(trap_intrinsic_type, llvm::Function::ExternalLinkage, "llvm.debugtrap", module);
+	Builder.CreateCall(trap_intrinsic->getFunctionType(), trap_intrinsic, std::vector<llvm::Value*> { });
+#endif
+
 	llvm::Function* existing_puts = module.getFunction("puts");
 
 	Builder.CreateCall(existing_puts->getFunctionType(), existing_puts, std::vector<llvm::Value*>{cooler_buf});
